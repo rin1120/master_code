@@ -24,14 +24,11 @@ VECTOR_INCREMENT = 0.1
 
 USE_FIXED_START_NODE = False
 
-# ブーストパラメータ
-lambda_boost = 1.0  # ブーストの強度
-
-# ε-greedy戦略用パラメータ
+# ε-greedy戦略用パラメータ（リセットなしの場合のみ使用）
 USE_EPSILON = True
 EPSILON = 0.1  # 10%の確率でランダム選択
 
-# 停滞検出に基づく部分リセット用パラメータ
+# 停滞検出に基づく部分リセット用パラメータ（リセットなしの場合のみ使用）
 USE_STAGNATION_RESET = False
 stagnation_window = 10         # 直近10イテレーション
 stagnation_threshold = 0.01    # 変動率が1%未満なら停滞と判断
@@ -103,7 +100,6 @@ def cache_prop(size):
     cache_num = TIME_TO_CACHE_PER_CONTENT
     cache_hops = TIMES_TO_CACHE_HOP
     alpha_zero = LEARNING_RATE
-
     for _ in range(cache_num):
         for cid in range(1, cont_num + 1):
             curr = (np.random.randint(size), np.random.randint(size))
@@ -125,7 +121,6 @@ def cache_prop(size):
                 curr = closest
             hoped_node.append(curr)
             cache_storage[curr[0]][curr[1]].append(cid)
-
             tmp = 0
             total_hops = len(hoped_node)
             for node in hoped_node:
@@ -239,7 +234,6 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                     allowed = [n for n in neighbors if n not in visited]
                     if not allowed:
                         break
-                    # ε-greedy: ある確率でランダム選択
                     if USE_EPSILON and random.random() < EPSILON:
                         next_node = random.choice(allowed)
                     else:
@@ -270,7 +264,6 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                     iter_costs.append(cost)
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
-            # フェロモン更新
             for edge in pheromone_trails:
                 pheromone_trails[edge] *= (1 - RHO)
                 pheromone_trails[edge] = max(pheromone_trails[edge], 1e-6)
@@ -287,7 +280,8 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
 # ----------------------------------------------------------------------------
 # ② 属性フェロモン方式 共通処理
 # reset_pheromone=True: リセットあり、False: リセットなし
-# 最良結果記憶＋ブースト、さらにε-greedyと停滞検出による部分リセットを導入
+# ここでは、固定更新（ブーストなし）で、ε-greedyと停滞検出による部分リセットは
+# リセットなしのときのみ適用する
 def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=True):
     results = []
     if not reset_pheromone:
@@ -303,7 +297,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             continue
         vect = cont_vector_array[cid - 1]
         iteration_data = []
-        best_cost = TIMES_TO_SEARCH_HOP  # 初期の最良結果
+        best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（更新はするが固定更新に戻す）
         avg_costs = []  # 停滞検出用
         for _ in range(NUM_ITERATIONS):
             iter_costs = []
@@ -325,8 +319,8 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     allowed = [n for n in neighbors if n not in visited]
                     if not allowed:
                         break
-                    # ε-greedy戦略
-                    if USE_EPSILON and random.random() < EPSILON:
+                    # ここで、ε-greedyはリセットなしの場合のみ適用
+                    if not reset_pheromone and USE_EPSILON and random.random() < EPSILON:
                         next_node = random.choice(allowed)
                     else:
                         probs = []
@@ -336,7 +330,6 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                             tau_list = pheromone_trails[edge]
                             dist = np.linalg.norm(vect - net_vector_array[n])
                             eta = 1.0 / (dist + 1e-6)
-                            # マスク付き平均: vectが1の属性のみ考慮
                             if np.sum(vect) > 0:
                                 A_ij = np.sum((tau_list ** ALPHA) * vect) / np.sum(vect)
                             else:
@@ -361,20 +354,18 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     iter_costs.append(cost)
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
-            # 停滞検出：平均コストの変動をチェックし、変動が小さい場合は部分リセット
-            if len(iter_costs) > 0:
-                avg_cost = np.mean(iter_costs)
-            else:
-                avg_cost = TIMES_TO_SEARCH_HOP
-            avg_costs.append(avg_cost)
-            if USE_STAGNATION_RESET and len(avg_costs) >= stagnation_window:
-                window = avg_costs[-stagnation_window:]
-                if (max(window) - min(window)) / (min(window) + 1e-6) < stagnation_threshold:
-                    # 部分リセット: 全エッジのフェロモン値をreset_factor倍
-                    for edge in pheromone_trails:
-                        pheromone_trails[edge] *= reset_factor
-                    avg_costs = []
-            # 更新：最良結果の更新
+            # 停滞検出（リセットなしの場合のみ適用）
+            if not reset_pheromone:
+                avg_cost = np.mean(iter_costs) if iter_costs else TIMES_TO_SEARCH_HOP
+                avg_costs.append(avg_cost)
+                if USE_STAGNATION_RESET and len(avg_costs) >= stagnation_window:
+                    window = avg_costs[-stagnation_window:]
+                    variation = (max(window) - min(window)) / (min(window) + 1e-6)
+                    if variation < stagnation_threshold:
+                        for edge in pheromone_trails:
+                            pheromone_trails[edge] *= reset_factor
+                        avg_costs = []
+            # 更新：最良結果の更新（best_costは記録のみ）
             if all_costs:
                 iteration_best = min(all_costs)
                 if iteration_best < best_cost:
@@ -383,11 +374,10 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             for edge in pheromone_trails:
                 pheromone_trails[edge] *= (1 - RHO)
                 pheromone_trails[edge] = np.maximum(pheromone_trails[edge], 1e-6)
-            # 最良経路（またはそれ以下）の場合のみ、かつブースト更新
+            # 固定更新：delta = Q * vect / cost
             for path, cost in zip(all_paths, all_costs):
-                if cost <= best_cost:
-                    gamma = 1 + lambda_boost * ((best_cost - cost) / (best_cost + 1e-6))
-                    delta = gamma * (Q * vect) / cost
+                if cost > 0:
+                    delta = (Q * vect) / cost
                     for i in range(len(path) - 1):
                         edge = (path[i], path[i+1])
                         pheromone_trails[edge] += delta
