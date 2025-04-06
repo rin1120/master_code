@@ -1,3 +1,5 @@
+#既存手法＋３手法（ACO、多次元AC0リセットあり、なし）
+
 import numpy as np
 import pandas as pd
 import random
@@ -7,7 +9,7 @@ import matplotlib.pyplot as plt
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -280,8 +282,7 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
 # ----------------------------------------------------------------------------
 # ② 属性フェロモン方式 共通処理
 # reset_pheromone=True: リセットあり、False: リセットなし
-# ここでは、固定更新（ブーストなし）で、ε-greedyと停滞検出による部分リセットは
-# リセットなしのときのみ適用する
+# 固定更新（ブーストなし）で、ε-greedyと停滞検出による部分リセットはリセットなしの場合のみ適用
 def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=True):
     results = []
     if not reset_pheromone:
@@ -297,7 +298,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             continue
         vect = cont_vector_array[cid - 1]
         iteration_data = []
-        best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（更新はするが固定更新に戻す）
+        best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（固定更新なので更新は記録のみ）
         avg_costs = []  # 停滞検出用
         for _ in range(NUM_ITERATIONS):
             iter_costs = []
@@ -319,7 +320,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     allowed = [n for n in neighbors if n not in visited]
                     if not allowed:
                         break
-                    # ここで、ε-greedyはリセットなしの場合のみ適用
+                    # ε-greedyはリセットなしの場合のみ適用
                     if not reset_pheromone and USE_EPSILON and random.random() < EPSILON:
                         next_node = random.choice(allowed)
                     else:
@@ -365,7 +366,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                         for edge in pheromone_trails:
                             pheromone_trails[edge] *= reset_factor
                         avg_costs = []
-            # 更新：最良結果の更新（best_costは記録のみ）
+            # 更新：最良結果の記録（best_costは記録のみ）
             if all_costs:
                 iteration_best = min(all_costs)
                 if iteration_best < best_cost:
@@ -374,7 +375,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             for edge in pheromone_trails:
                 pheromone_trails[edge] *= (1 - RHO)
                 pheromone_trails[edge] = np.maximum(pheromone_trails[edge], 1e-6)
-            # 固定更新：delta = Q * vect / cost
+            # 固定更新：delta = Q * vect / cost（ブーストなし）
             for path, cost in zip(all_paths, all_costs):
                 if cost > 0:
                     delta = (Q * vect) / cost
@@ -452,6 +453,53 @@ def average_iteration_data_across_runs(all_runs, content_index=0):
         combined_iteration_data.append(merged)
     return compute_stats_from_costs(combined_iteration_data)
 
+# --- 新規関数: 総合結果の統計量を計算する ---
+def gather_overall_stats(all_runs):
+    # all_runs: 各シミュレーション毎の結果（各コンテンツごとにイテレーションごとのコストリスト）
+    overall_iter_data = []
+    for it in range(NUM_ITERATIONS):
+        all_costs = []
+        for sim_run in all_runs:
+            # sim_runは各コンテンツ結果のリスト
+            for content_result in sim_run:
+                if len(content_result) > it:
+                    all_costs.extend(content_result[it])
+        overall_iter_data.append(all_costs)
+    return compute_stats_from_costs(overall_iter_data)
+
+def plot_overall_metrics(stats_dict):
+    # stats_dict: {'Single': stats, 'AttribReset': stats, 'AttribNoReset': stats}
+    its = range(1, NUM_ITERATIONS + 1)
+    plt.figure()
+    plt.plot(its, stats_dict['Single'][0], label='Single(Reset)', color='red', marker='o')
+    plt.plot(its, stats_dict['AttribReset'][0], label='Attrib(Reset)', color='blue', marker='s')
+    plt.plot(its, stats_dict['AttribNoReset'][0], label='Attrib(NoReset)', color='green', marker='^')
+    plt.title("Overall: Median")
+    plt.xlabel("Iteration")
+    plt.ylabel("Median Hops")
+    plt.legend()
+    plt.show()
+
+    plt.figure()
+    plt.plot(its, stats_dict['Single'][3], label='Single(Reset)', color='red', marker='o')
+    plt.plot(its, stats_dict['AttribReset'][3], label='Attrib(Reset)', color='blue', marker='s')
+    plt.plot(its, stats_dict['AttribNoReset'][3], label='Attrib(NoReset)', color='green', marker='^')
+    plt.title("Overall: Average Cost")
+    plt.xlabel("Iteration")
+    plt.ylabel("Average Hops")
+    plt.legend()
+    plt.show()
+
+    plt.figure()
+    plt.plot(its, stats_dict['Single'][4], label='Single(Reset)', color='red', marker='o')
+    plt.plot(its, stats_dict['AttribReset'][4], label='Attrib(Reset)', color='blue', marker='s')
+    plt.plot(its, stats_dict['AttribNoReset'][4], label='Attrib(NoReset)', color='green', marker='^')
+    plt.title("Overall: Success Rate")
+    plt.xlabel("Iteration")
+    plt.ylabel("Success Rate (%)")
+    plt.legend()
+    plt.show()
+
 def main():
     size = 50
     cache_storage, net_vector_array = cache_prop(size)
@@ -483,6 +531,13 @@ def main():
         print(f"=== [Comparison] Content #{content_idx+1} ===")
         stat_s, stat_ar, stat_an = gather_stats_for_content(content_idx, single_all_runs, attrib_reset_all_runs, attrib_noreset_all_runs)
         plot_three_metrics_for_content(stat_s, stat_ar, stat_an, content_label=content_idx+1)
+    # 総合結果の統計量を計算してプロット
+    overall_stats = {
+        'Single': gather_overall_stats(single_all_runs),
+        'AttribReset': gather_overall_stats(attrib_reset_all_runs),
+        'AttribNoReset': gather_overall_stats(attrib_noreset_all_runs)
+    }
+    plot_overall_metrics(overall_stats)
 
 if __name__ == "__main__":
     main()
