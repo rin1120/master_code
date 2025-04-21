@@ -275,9 +275,11 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
 # reset_pheromone=True: リセットあり、False: リセットなし
 def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=True):
     results = []
+    #リセットなしは、探索１回目でのみ初期化
     if not reset_pheromone:
         global_pheromone_trails = initialize_pheromone_trails(size, N)
     for (cid, start_node) in content_tasks:
+        #リセットありは、探索毎に初期化
         if reset_pheromone:
             pheromone_trails = initialize_pheromone_trails(size, N)
         else:
