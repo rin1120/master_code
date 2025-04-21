@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 5  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -136,6 +136,7 @@ def generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH):
             start_node = (np.random.randint(size), np.random.randint(size))
         tasks.append((cid, start_node))
     return tasks
+
 
 # ----------------------------------------------------------------------------
 # 統計量計算
@@ -355,7 +356,10 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             # 固定更新：delta = Q * vect / cost　（帯域上限の処理は削除）
             for path, cost in zip(all_paths, all_costs):
                 if cost > 0:
-                    delta = (Q * vect) / cost
+                    # #正規化なし
+                    # delta = (Q * vect) / cost
+                    #正規化あり
+                    delta = (Q * vect) / (cost * np.sum(vect))
                     for i in range(len(path) - 1):
                         edge = (path[i], path[i+1])
                         pheromone_trails[edge] += delta
