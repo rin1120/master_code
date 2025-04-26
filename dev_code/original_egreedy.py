@@ -4,12 +4,13 @@ import numpy as np
 import pandas as pd
 import random
 import matplotlib.pyplot as plt
+from collections import namedtuple  
 
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -30,11 +31,6 @@ USE_FIXED_START_NODE = False
 USE_EPSILON = True
 EPSILON = 0.1  # 10%の確率でランダム選択
 
-# 停滞検出に基づく部分リセット用パラメータ（リセットなしの場合のみ使用）
-USE_STAGNATION_RESET = False
-stagnation_window = 10         # 直近10イテレーション
-stagnation_threshold = 0.01    # 変動率が1%未満なら停滞と判断
-reset_factor = 0.5             # 部分リセット時、フェロモン値を半減
 
 # CSVファイルから属性ベクトルを準備
 file_path = "500_movies.csv"  # 適宜修正
@@ -161,9 +157,17 @@ def compute_stats_from_costs(iteration_costs_data):
     return medians, q1s, q3s, means, success_rates
 
 # ----------------------------------------------------------------------------
+# デバッグ用レコード（CSV 行にそのまま使う）        ★
+# ----------------------------------------------------------------------------
+DebugRec = namedtuple("DebugRec",
+                      ["method", "cid", "start", "found",
+                       "hops", "cost", "path"])
+
+
+# ----------------------------------------------------------------------------
 # 既存手法による探索
 # ----------------------------------------------------------------------------
-def search_prop(cache_storage, net_vector_array, size, content_tasks):
+def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
     cache_hit = 0
     total_hops_used = 0
     for (cid, start_node) in content_tasks:
@@ -199,6 +203,8 @@ def search_prop(cache_storage, net_vector_array, size, content_tasks):
             curr = closest
         if found:
             cache_hit += 1
+            #デバッグ用レコードを追加
+            log_list.append(DebugRec("BASE", cid, start_node,curr, hops_used, hops_used, []))
         total_hops_used += hops_used
     avg_hops = total_hops_used / len(content_tasks) if content_tasks else 0.0
     return cache_hit, avg_hops
@@ -206,7 +212,7 @@ def search_prop(cache_storage, net_vector_array, size, content_tasks):
 # ----------------------------------------------------------------------------
 # ① 単一フェロモン方式 (リセットあり)
 # ----------------------------------------------------------------------------
-def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks):
+def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, log_list):
     results = []
     for (cid, start_node) in content_tasks:
         pheromone_trails = initialize_single_pheromone_trails(size)
@@ -262,6 +268,8 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                     all_paths.append(path)
                     all_costs.append(cost)
                     iter_costs.append(cost)
+                    #デバック用レコードの追加
+                    log_list.append(DebugRec("SINGLE", cid, start_node,current_node, cost, cost, path))
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
             for edge in pheromone_trails:
@@ -279,9 +287,10 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
 
 # ----------------------------------------------------------------------------
 # ② 属性フェロモン方式 共通処理
-# reset_pheromone=True: リセットあり、False: リセットなし
-def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=True):
+# reset_pheromone=True: リセットあり、False: リセットなしe
+def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, log_list, reset_pheromone=True):
     results = []
+    tag = "ATTRIB_R" if reset_pheromone else "ATTRIB_NR"
     if not reset_pheromone:
         global_pheromone_trails = initialize_pheromone_trails(size, N)
     for (cid, start_node) in content_tasks:
@@ -296,7 +305,6 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
         vect = cont_vector_array[cid - 1]
         iteration_data = []
         best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（固定更新なので更新は記録のみ）
-        avg_costs = []  # 停滞検出用
         for _ in range(NUM_ITERATIONS):
             iter_costs = []
             all_paths = []
@@ -350,19 +358,10 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     all_paths.append(path)
                     all_costs.append(cost)
                     iter_costs.append(cost)
+                    #デバック用コードの追加
+                    log_list.append(DebugRec(tag, cid, start_node,current_node, cost, cost, path))
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
-            # 停滞検出（リセットなしの場合のみ適用）
-            if not reset_pheromone:
-                avg_cost = np.mean(iter_costs) if iter_costs else TIMES_TO_SEARCH_HOP
-                avg_costs.append(avg_cost)
-                if USE_STAGNATION_RESET and len(avg_costs) >= stagnation_window:
-                    window = avg_costs[-stagnation_window:]
-                    variation = (max(window) - min(window)) / (min(window) + 1e-6)
-                    if variation < stagnation_threshold:
-                        for edge in pheromone_trails:
-                            pheromone_trails[edge] *= reset_factor
-                        avg_costs = []
             # 更新：最良結果の記録（best_costは記録のみ）
             if all_costs:
                 iteration_best = min(all_costs)
@@ -375,7 +374,10 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             # 固定更新：delta = Q * vect / cost（ブーストなし）
             for path, cost in zip(all_paths, all_costs):
                 if cost > 0:
-                    delta = (Q * vect) / cost
+                    #正規化なし
+                    #delta = (Q * vect) / cost
+                    #正規化あり
+                    delta = (Q * vect) / (cost * np.sum(vect))
                     for i in range(len(path) - 1):
                         edge = (path[i], path[i+1])
                         pheromone_trails[edge] += delta
@@ -383,11 +385,11 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
         results.append(iteration_data)
     return results
 
-def multi_contents_attrib_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks):
-    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=True)
+def multi_contents_attrib_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, log_list):
+    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, log_list, reset_pheromone=True)
 
-def multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks):
-    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, reset_pheromone=False)
+def multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, log_list):
+    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, log_list, reset_pheromone=False)
 
 def gather_stats_for_content(content_index, single_all_runs, attrib_reset_all_runs, attrib_noreset_all_runs):
     s_stat = average_iteration_data_across_runs(single_all_runs, content_index)
@@ -502,30 +504,45 @@ def main():
     cache_storage, net_vector_array = cache_prop(size)
     content_tasks = generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH)
     print("Generated Content Tasks:", content_tasks)
-    if len(content_tasks) >= 2:
-        A = content_tasks[0][0]
-        B = content_tasks[1][0]
-        distance = compute_content_distance(A, B)
-        print(f"Distance between content {A} and {B} = {distance:.3f}")
+    
+    debug_logs = []
+
     single_all_runs = []
     attrib_reset_all_runs = []
     attrib_noreset_all_runs = []
+
     for _sim in range(TIME_TO_SIMULATE):
-        single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks)
-        attrib_reset_res = multi_contents_attrib_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks)
-        attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks)
+        single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
+        attrib_reset_res = multi_contents_attrib_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
+        attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
+
         single_all_runs.append(single_res)
         attrib_reset_all_runs.append(attrib_reset_res)
         attrib_noreset_all_runs.append(attrib_noreset_res)
-    cache_hit, avg_hops = search_prop(cache_storage, net_vector_array, size, content_tasks)
+
+    cache_hit, avg_hops = search_prop(cache_storage, net_vector_array, size, content_tasks, debug_logs)
     success_rate = (cache_hit / len(content_tasks)) * 100
+
+    #CSV 出力
+    df = pd.DataFrame(debug_logs)
+    df.to_csv("egreedy_debug_log.csv", index=False, encoding="utf-8-sig")
+    print(f"\n>>> {len(df)} 行を書き出しました → egreedy_debug_log.csv")
+
     print("\n=== Existing Method (Same Tasks) ===")
     print(f"  - #Tasks : {len(content_tasks)}")
     print(f"  - Cache Hit: {cache_hit}")
     print(f"  - Success Rate: {success_rate:.2f}%")
     print(f"  - Avg Hops: {avg_hops:.2f}")
     for content_idx in range(NUM_CONTENTS_TO_SEARCH):
-        print(f"=== [Comparison] Content #{content_idx+1} ===")
+        if content_idx == 0:
+            print(f"=== [Comparison] Content #{content_idx+1} ===")
+        else:
+            prev_cid = content_tasks[content_idx-1][0]
+            cid = content_tasks[content_idx][0]
+            dist     = compute_content_distance(prev_cid, cid)
+            print(f"=== [Comparison] Content #{content_idx+1} ===")
+            print(f"Distance between content {prev_cid} and {cid} = {dist:.3f}")
+
         stat_s, stat_ar, stat_an = gather_stats_for_content(content_idx, single_all_runs, attrib_reset_all_runs, attrib_noreset_all_runs)
         plot_three_metrics_for_content(stat_s, stat_ar, stat_an, content_label=content_idx+1)
     # 総合結果の統計量を計算してプロット
