@@ -9,7 +9,7 @@ from collections import namedtuple
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
-TIME_TO_SIMULATE = 3
+TIME_TO_SIMULATE = 1
 NUM_CONTENTS_TO_SEARCH = 20  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
@@ -18,10 +18,11 @@ ALPHA = 1.0   # フェロモンの指数
 BETA = 1.0    # SOM類似度の指数
 Q = 100
 
-# --- 可変蒸発パラメータ ----------------------------------------
+# --- 可変蒸発・付加パラメータ ----------------------------------------
 RHO      = 0.10   # ベース蒸発率 (従来の RHO と同値で可)
 RHO_MAX   = 0.9   # 蒸発率の上限
-LAMBDA_R  = 0.5   # 拡張係数 λ   (0.1〜0.5 で様子を見ると良い)
+LAMBDA_R  = 1   # 拡張係数 λ   (0.1〜0.5 で様子を見ると良い),1だとこの変数がないと同じ
+BOOST = 5 # フェロモンの付加量を調整するための係数
 # ---------------------------------------------------------------
 
 TIMES_TO_SEARCH_HOP = 50
@@ -370,11 +371,12 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
                 #　イタレーションベストを求める
             best_iter_cost = min(all_costs) if all_costs else TIMES_TO_SEARCH_HOP
-            # 更新：最良結果の記録（best_costは記録のみ）
+            # 前更新：最良結果の記録（best_costは記録のみ）
             if all_costs:
                 iteration_best = min(all_costs)
                 if iteration_best < best_cost:
                     best_cost = iteration_best
+            iteration_data.append(iter_costs)
             # フェロモンの蒸発更新
             for edge in pheromone_trails:
                 pheromone_trails[edge] *= (1 - RHO)
@@ -394,17 +396,21 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                         pheromone_trails[edge] *= extra_mul
                         pheromone_trails[edge]  = np.maximum(pheromone_trails[edge], 1e-6)
 
-            # 固定更新：delta = Q * vect / cost（ブーストなし）
+            # ローカルの最良結果に応じて、フェロモンの付加量を調整
             for path, cost in zip(all_paths, all_costs):
                 if cost > 0:
+                    #リセットなしの場合、最良パスのコストよりも良い経路はフェロモンを増加
+                    if reset_pheromone==False and cost <= best_cost:
+                        Q_eff = Q * BOOST
+                    else:
+                        Q_eff = Q
                     #正規化なし
                     #delta = (Q * vect) / cost
                     #正規化あり
-                    delta = (Q * vect) / (cost * np.sum(vect))
+                    delta = (Q_eff * vect) / (cost * np.sum(vect))
                     for i in range(len(path) - 1):
                         edge = (path[i], path[i+1])
                         pheromone_trails[edge] += delta
-            iteration_data.append(iter_costs)
         results.append(iteration_data)
     return results
 
