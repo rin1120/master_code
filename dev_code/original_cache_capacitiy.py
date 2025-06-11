@@ -1,5 +1,3 @@
-# 既存手法、提案手法において、キャッシュ容量を持たせたシミュレーション
-
 import numpy as np
 import pandas as pd
 import random
@@ -25,7 +23,6 @@ RHO_MAX   = 0.9   # 蒸発率の上限
 LAMBDA_R  = 1   # 拡張係数 λ   (0.1〜0.5 で様子を見ると良い),1だとこの変数がないと同じ
 BOOST = 5 # フェロモンの付加量を調整するための係数
 # ---------------------------------------------------------------
-
 TIMES_TO_SEARCH_HOP = 50
 TIMES_TO_CACHE_HOP = 10
 TIME_TO_CACHE_PER_CONTENT = 10  
@@ -39,6 +36,8 @@ USE_FIXED_START_NODE = False
 USE_EPSILON = True
 EPSILON = 0.01  # 10%の確率でランダム選択
 
+REPLACEMENT_POLICY = "LRU"   # "LRU" か "FIFO"
+global_clock = 0             # LRU 用タイムスタンプ
 
 # CSVファイルから属性ベクトルを準備
 file_path = "500_movies.csv"  # 適宜修正
@@ -48,14 +47,6 @@ N = len(df.columns) - 1
 cont_num = len(df)
 cont_vector = df.set_index('id').values.tolist()
 cont_vector_array = [np.array(vec) for vec in cont_vector]
-
-# ----------------------------------------------------------------------------
-# 2つのコンテンツIDの距離を計算する関数
-# ----------------------------------------------------------------------------
-def compute_content_distance(cid_a, cid_b):
-    vect_a = cont_vector_array[cid_a - 1]
-    vect_b = cont_vector_array[cid_b - 1]
-    return np.linalg.norm(vect_a - vect_b)
 
 # ----------------------------------------------------------------------------
 # ネットワーク関連の関数
@@ -70,13 +61,6 @@ def get_neighbors(x, y, size):
         if 0 <= nx < size and 0 <= ny < size:
             neighbors.append((nx, ny))
     return neighbors
-
-def get_init_cache_storage(size):
-    cache_storage = np.empty((size, size), dtype=object)
-    for i in range(size):
-        for j in range(size):
-            cache_storage[i][j] = deque(maxlen=CACHE_CAPACITY)
-    return cache_storage
 
 def get_init_network_vector(size):
     incr = VECTOR_INCREMENT
@@ -101,46 +85,78 @@ def initialize_single_pheromone_trails(size):
                 pheromone_trails[(curr_node, neighbor)] = 1.0
     return pheromone_trails
 
-def cache_insert(node_list, cid):
-    if cid in node_list:        # 既に同コンテンツを保持
-        return True
-    if len(node_list) < CACHE_CAPACITY:
-        node_list.append(cid)   # 空きがあれば追加
-        return True
-    return False                # 満杯で追放は行わない
+# ----------------------------------------------------------------------------
+# キャッシュ容量、キャッシュ置換方式の関数
+# ----------------------------------------------------------------------------
+def get_init_cache_storage(size):
+    cache_storage = np.empty((size, size), dtype=object)   
+    for i in range(size):                                  
+        for j in range(size):
+            cache_storage[i][j] = []                       
+    return cache_storage          
 
-def place_with_neighborhood(cache_storage, net_vec, pos, cid, size):
-    queue   = [pos]            # FIFO キュー (BFS)
-    visited = set()            # 再訪防止
-    vect_c  = cont_vector_array[cid - 1]  # コンテンツ属性ベクトル
+def cache_insert(node_list, cid, is_original=False):
+    global global_clock
+    # ① タイムスタンプ更新
+    global_clock += 1               
+    # ② 既に cid が存在 → ts 更新 (LRU)・orig フラグ OR 演算
+    for ent in node_list:
+        if ent["cid"] == cid:
+            ent["ts"]   = global_clock
+            ent["orig"] = ent["orig"] or is_original
+            return True
+
+    # ③ 空きスロットがある場合は追加
+    if len(node_list) < CACHE_CAPACITY:
+        node_list.append({"cid": cid, "orig": is_original, "ts":  global_clock})
+        return True
+    
+    # ④ 満杯 ⇒ non-original から victim 候補抽出
+    candidates = [e for e in node_list if not e["orig"]]
+    if not candidates:                 # original しかなければ追放不可
+        return False
+    
+    # ⑤ FIFO(先頭) / LRU(最古アクセス) 同じ判定： ts が最小
+    victim = min(candidates, key=lambda e: e["ts"])
+    node_list.remove(victim)           # ⑥ victim 追放
+
+    # ⑦ 新エントリ追加
+    node_list.append({"cid": cid,"orig": is_original,"ts":  global_clock})
+
+    return True
+    
+def place_with_neighborhood(cache_storage, net_vec, pos, cid, size, is_original=False):
+    queue   = [pos]                        # FIFO キューで BFS
+    visited = set()
+    vect_c  = cont_vector_array[cid - 1]   # 属性ベクトル
 
     while queue:
-        v = queue.pop(0)       # 現在ノード
-        if v in visited:
+        v = queue.pop(0)
+        if v in visited:                   # 再訪問防止
             continue
         visited.add(v)
 
-        # (2) 空きがあれば追加して終了
-        if cache_insert(cache_storage[v[0]][v[1]], cid):
-            return True
+        # 1) まず現在ノードで挿入試行
+        if cache_insert(cache_storage[v[0]][v[1]], cid, is_original):
+            return True                    # 追加成功
 
-        # (3) 隣接に同一 cid があれば重複を避けて終了
+        # 2) 隣接に同一 CID があれば配置せず終了
         for nb in get_neighbors(v[0], v[1], size):
-            if cid in cache_storage[nb[0]][nb[1]]:
+            if any(e["cid"] == cid for e in cache_storage[nb[0]][nb[1]]):
                 return False
 
-        # (4) 隣接の中で SOM 類似度が最大のノードを次候補に
-        best_nb, best_sim = None, -1
+        # 3) 隣接候補の中で属性距離が最小（類似度最大）を選ぶ
+        best_nb, best_sim = None, -np.inf
         for nb in get_neighbors(v[0], v[1], size):
             if nb in visited:
                 continue
-            sim = -np.linalg.norm(vect_c - net_vec[nb])  # 距離小 → sim 大
+            sim = -np.linalg.norm(vect_c - net_vec[nb])
             if sim > best_sim:
                 best_nb, best_sim = nb, sim
-        if best_nb:                # 候補があればキューへ
-            queue.append(best_nb)
+        if best_nb is not None:
+            queue.append(best_nb)          # 次候補としてエンキュー
 
-    # 探索を尽くしても空きが無い場合
+    # ループを尽くしても格納できなかった
     return False
 
 # ----------------------------------------------------------------------------
@@ -149,14 +165,18 @@ def place_with_neighborhood(cache_storage, net_vec, pos, cid, size):
 def cache_prop(size):
     cache_storage = get_init_cache_storage(size)
     net_vector_array = get_init_network_vector(size)
+
     cache_num = TIME_TO_CACHE_PER_CONTENT
     cache_hops = TIMES_TO_CACHE_HOP
     alpha_zero = LEARNING_RATE
-    for _ in range(cache_num):
+    for cycle in range(cache_num):
         for cid in range(1, cont_num + 1):
             curr = (np.random.randint(size), np.random.randint(size))
             vect = cont_vector_array[cid - 1]
             hoped_node = []
+            
+            #初回はオリジナルコンテンツとする
+            is_original = (cycle == 0)
             for _2 in range(cache_hops):
                 min_dist = float('inf')
                 closest = None
@@ -172,10 +192,8 @@ def cache_prop(size):
                 hoped_node.append(curr)
                 curr = closest
             hoped_node.append(curr)
-            # キャッシュ容量無限
-            #cache_storage[curr[0]][curr[1]].append(cid)
             #　キャッシュ容量有限
-            place_with_neighborhood(cache_storage,net_vector_array, curr, cid, size)
+            place_with_neighborhood(cache_storage,net_vector_array,curr, cid, size, is_original)
 
             tmp = 0
             total_hops = len(hoped_node)
@@ -184,6 +202,11 @@ def cache_prop(size):
                 alpha = alpha_zero * (tmp / total_hops)
                 net_vector_array[node] += alpha * (vect - net_vector_array[node])
     return cache_storage, net_vector_array
+
+#キャッシュに cid が含まれているかを確認する関数
+def has_content(node_list, cid):
+    """node_list に cid が含まれているか（dict 版キャッシュ対応）"""
+    return any(e["cid"] == cid for e in node_list)
 
 # ----------------------------------------------------------------------------
 # 複数コンテンツ探索タスク生成
@@ -235,11 +258,11 @@ def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
         hops_used = 0
         for _ in range(TIMES_TO_SEARCH_HOP):
             hops_used += 1
-            if cid in cache_storage[curr[0]][curr[1]]:
+            if has_content(cache_storage[curr[0]][curr[1]], cid):
                 found = True
                 break
             for nx, ny in get_neighbors(curr[0], curr[1], size):
-                if cid in cache_storage[nx][ny]:
+                if has_content(cache_storage[nx][ny], cid):
                     found = True
                     break
             if found:
@@ -274,7 +297,7 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
     results = []
     for (cid, start_node) in content_tasks:
         pheromone_trails = initialize_single_pheromone_trails(size)
-        content_nodes = [(x, y) for x in range(size) for y in range(size) if cid in cache_storage[x][y]]
+        content_nodes = [(x, y) for x in range(size) for y in range(size) if has_content(cache_storage[x][y], cid)]
         if not content_nodes:
             results.append([])
             continue
@@ -293,7 +316,7 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                 cost = 0
                 found = False
                 for _ in range(TIMES_TO_SEARCH_HOP):
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
+                    if has_content(cache_storage[current_node[0]][current_node[1]], cid):
                         found = True
                         break
                     neighbors = get_neighbors(current_node[0], current_node[1], size)
@@ -319,7 +342,7 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                     visited.add(next_node)
                     cost += 1
                     current_node = next_node
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
+                    if has_content(cache_storage[current_node[0]][current_node[1]], cid):
                         found = True
                         break
                 if found:
@@ -357,7 +380,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
             pheromone_trails = initialize_pheromone_trails(size, N)
         else:
             pheromone_trails = global_pheromone_trails
-        content_nodes = [(x, y) for x in range(size) for y in range(size) if cid in cache_storage[x][y]]
+        content_nodes = [(x, y) for x in range(size) for y in range(size) if has_content(cache_storage[x][y], cid)]
         if not content_nodes:
             results.append([])
             continue
@@ -377,7 +400,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                 cost = 0
                 found = False
                 for _ in range(TIMES_TO_SEARCH_HOP):
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
+                    if has_content(cache_storage[current_node[0]][current_node[1]], cid):
                         found = True
                         break
                     neighbors = get_neighbors(current_node[0], current_node[1], size)
@@ -410,7 +433,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                     visited.add(next_node)
                     cost += 1
                     current_node = next_node
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
+                    if has_content(cache_storage[current_node[0]][current_node[1]], cid):
                         found = True
                         break
                 if found:
@@ -553,16 +576,13 @@ def plot_capacity_tradeoff(cap_list,
 # ---------- メイン実行 ----------
 def main():
     size = 30
-    cap_range = [5, 10, 15]         # 横軸：キャッシュ容量
+    cap_range = [5, 10, 15]
 
     # ３手法×容量ごとの平均ホップ数・成功率を取得
-    (h_prev, h_sing, h_attr,
-     s_prev, s_sing, s_attr) = simulate_for_capacity(cap_range, size)
+    (h_prev, h_sing, h_attr, s_prev, s_sing, s_attr) = simulate_for_capacity(cap_range, size)
 
     # グラフ描画（２枚）
-    plot_capacity_tradeoff(cap_range,
-                           h_prev, h_sing, h_attr,
-                           s_prev, s_sing, s_attr)
+    plot_capacity_tradeoff(cap_range, h_prev, h_sing, h_attr, s_prev, s_sing, s_attr)
 
 if __name__ == "__main__":
     main()
