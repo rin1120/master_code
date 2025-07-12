@@ -1,4 +1,5 @@
-# 既存手法 + 4つの手法（ACO、多次元ACO（リセットあり／なし（オリジナル／e-greedy適応＋ローカルベスト））
+# 山代法＋比較手法（コンテンツ毎にフェロモン管理）＋提案手法（属性毎にフェロモン管理）
+#比較手法、提案手法どちらにもローカルベストの探索を実装
 
 import numpy as np
 import pandas as pd
@@ -219,8 +220,11 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
         pheromone_dict = {}
 
     for (cid, start_node) in content_tasks:
+        # ID用のフェロもの有無を確認
         if cid not in pheromone_dict:
+            # 存在しない場合、初期化
             pheromone_dict[cid] = initialize_single_pheromone_trails(size)
+        # 存在する場合は再利用
         pheromone_trails = pheromone_dict[cid]
         content_nodes = [(x, y) for x in range(size) for y in range(size) if cid in cache_storage[x][y]]
         if not content_nodes:
