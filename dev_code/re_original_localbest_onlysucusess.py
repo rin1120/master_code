@@ -1,6 +1,6 @@
 # 山代法＋比較手法（コンテンツ毎にフェロモン管理）＋提案手法（属性毎にフェロモン管理）
 #比較手法、提案手法どちらにもローカルベストの探索を実装
-#探索性能は全ての探索を反映（成功時と失敗時の両方）
+#探索性能は探索成功時のみ
 
 import numpy as np
 import pandas as pd
@@ -50,16 +50,6 @@ N = len(df.columns) - 1
 cont_num = len(df)
 cont_vector = df.set_index('id').values.tolist()
 cont_vector_array = [np.array(vec) for vec in cont_vector]
-
-# --- ジャンルとコンテンツIDの対応辞書を作成---
-non_genre_cols = ['id', 'release_date', 'revenue', 'runtime']
-genre_cols = [col for col in df.columns if col not in non_genre_cols]
-genre_to_cids = defaultdict(list)
-for genre_name in genre_cols:
-    cids_in_genre = df[df[genre_name] == 1]['id'].tolist()
-    if cids_in_genre:
-        genre_to_cids[genre_name] = cids_in_genre
-
 
 # ----------------------------------------------------------------------------
 # ネットワーク関連の関数
@@ -143,7 +133,6 @@ def cache_prop(size):
 # ----------------------------------------------------------------------------
 # コンテンツ探索タスク生成
 # ----------------------------------------------------------------------------
-######(1)ランダム要求
 def generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH):
     tasks = []
     for _ in range(k):
@@ -155,44 +144,6 @@ def generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH):
         tasks.append((cid, start_node))
     return tasks
 
-######(2)zipf要求
-# def generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH, popularity_ratio=0.01, request_concentration=0.8):
-#     tasks = []
-    
-#     # 人気コンテンツを決定
-#     num_popular = int(cont_num * popularity_ratio)
-#     all_cids = np.arange(1, cont_num + 1)
-#     popular_cids = np.random.choice(all_cids, num_popular, replace=False)
-#     unpopular_cids = np.setdiff1d(all_cids, popular_cids)
-    
-#     for _ in range(k):
-#         # request_concentrationの確率で人気コンテンツから選ぶ
-#         if random.random() < request_concentration:
-#             cid = random.choice(popular_cids)
-#         else:
-#             cid = random.choice(unpopular_cids)
-            
-#         start_node = (np.random.randint(size), np.random.randint(size))
-#         tasks.append((cid, start_node))
-#     return tasks
-
-######(3)類似要求
-# def generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=10):
-#     tasks = []
-#     available_genres = list(genre_to_cids.keys())
-#     if not available_genres:
-#         raise ValueError("ジャンル情報が見つかりませんでした。")
-    
-#     while len(tasks) < k:
-#         current_genre = random.choice(available_genres)
-#         cids_in_genre = genre_to_cids[current_genre]
-#         for _ in range(burst_size):
-#             if len(tasks) >= k: break
-#             cid = random.choice(cids_in_genre)
-#             start_node = (np.random.randint(size), np.random.randint(size))
-#             tasks.append((cid, start_node))
-#     return tasks
-
 # ----------------------------------------------------------------------------
 # 統計量計算
 # ----------------------------------------------------------------------------
@@ -202,7 +153,13 @@ def compute_stats_from_costs(iteration_costs_data):
         medians.append(np.median(costs))
         q1s.append(np.percentile(costs, 25))
         q3s.append(np.percentile(costs, 75))
-        means.append(np.mean(costs))
+        # 成功した探索のコストのみを抽出
+        successful_costs = [c for c in costs if c < TIMES_TO_SEARCH_HOP]
+        # 成功した探索があればその平均を、なければ上限値を平均ホップ数とする
+        if successful_costs:
+            means.append(np.mean(successful_costs))
+        else:
+            means.append(TIMES_TO_SEARCH_HOP)
         total = len(costs)
         success_count = sum(1 for c in costs if c < TIMES_TO_SEARCH_HOP)
         success_rates.append((success_count / total) * 100)
@@ -217,41 +174,12 @@ DebugRec = namedtuple("DebugRec",
 
 
 # ----------------------------------------------------------------------------
-#生成タスクの可視化
-# ----------------------------------------------------------------------------
-def visualize_task_distribution(tasks, title):
-    """生成されたタスクのコンテンツIDの分布を可視化する"""
-    if not tasks:
-        print("タスクリストが空です。")
-        return
-        
-    cids = [task[0] for task in tasks]
-    counts = pd.Series(cids).value_counts()
-    
-    plt.figure(figsize=(15, 6))
-    counts.plot(kind='bar', width=0.8)
-    plt.title(title, fontsize=16)
-    plt.xlabel("コンテンツID")
-    
-    # 【変更】Y軸のラベルを「要求回数」に変更
-    plt.ylabel("要求回数")
-    
-    # x軸のラベルが多すぎると見にくいので、表示を調整
-    if len(counts) > 50:
-        plt.xticks([]) # 50個以上ならラベルを非表示に
-    else:
-        plt.xticks(rotation=90, fontsize=8)
-    
-    plt.grid(axis='y', linestyle='--', alpha=0.7) # y軸にグリッドを追加して見やすく
-    plt.tight_layout()
-    plt.show()
-
-# ----------------------------------------------------------------------------
 # 既存手法による探索
 # ----------------------------------------------------------------------------
 def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
     cache_hit = 0
-    total_hops_used = 0
+    #成功した探索の合計ホップ数を記録する変数を追加
+    total_successful_hops_used = 0
     for (cid, start_node) in content_tasks:
         searched_node = []
         curr = start_node
@@ -286,9 +214,9 @@ def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
         if found:
             cache_hit += 1
             #デバッグ用レコードを追加
-            log_list.append(DebugRec("BASE", cid, start_node,curr, hops_used, hops_used, []))
-        total_hops_used += hops_used
-    avg_hops = total_hops_used / len(content_tasks) if content_tasks else 0.0
+            total_successful_hops_used += hops_used
+            log_list.append(DebugRec("BASE", cid, start_node, curr, hops_used, hops_used, []))
+    avg_hops = total_successful_hops_used / cache_hit if cache_hit > 0 else TIMES_TO_SEARCH_HOP
     return cache_hit, avg_hops
 
 # ----------------------------------------------------------------------------
@@ -654,10 +582,6 @@ def main():
     single_all_runs = []
     attrib_noreset_all_adapt = []
 
-    print("コンテンツ生成の分布を可視化します...")
-    content_tasks = generate_multi_contents_tasks(size, k=NUM_CONTENTS_TO_SEARCH)
-    visualize_task_distribution(content_tasks, "Task Distribution")
-
     for _sim in range(TIME_TO_SIMULATE):
         single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
         attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
@@ -689,8 +613,6 @@ def main():
         'NR-Adapt': gather_overall_stats(attrib_noreset_all_adapt),
     }
     plot_overall_metrics(overall_stats)
-
-
 
 if __name__ == "__main__":
     main()
