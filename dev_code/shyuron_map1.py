@@ -1,7 +1,13 @@
+## ----------------------------------------------------------------------------
+# shyuron_map1.py 修論本体　４章　記載コード
+# ----------------------------------------------------------------------------
+
 # 山代法＋比較手法（コンテンツ毎にフェロモン管理）＋提案手法（属性毎にフェロモン管理）
 #比較手法、提案手法どちらにもローカルベストの探索を実装
 #探索性能は全ての探索を反映（成功時と失敗時の両方）
 #コンテンツ生成手法をランダム、zipf、類似の3種類実装
+#iter=1を山白法＋ランダム探索,iter>1以降でSOMとACOの組み合わせを実施（パラメータ可変）
+#パラメータ0は暫定版
 
 import numpy as np
 import pandas as pd
@@ -14,13 +20,15 @@ from collections import defaultdict
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
-TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 100  # 探索するコンテンツ数
+TIME_TO_SIMULATE = 5
+NUM_CONTENTS_TO_SEARCH = 1000  # 探索するコンテンツ数
 NUM_ANTS = 10
-NUM_ITERATIONS = 10
+NUM_ITERATIONS = 100
 
-ALPHA = 1.0   # フェロモンの指数
-BETA = 1.0    # SOM類似度の指数
+ALPHA_START = 1.0   # 初期フェロモンの指数
+BETA_START = 10.0    # 初期SOM類似度の指数
+ALPHA_END = 1.0   # 最終フェロモンの指数
+BETA_END = 1.0    # 最終SOM類似度の指数
 Q = 100
 
 # --- 可変蒸発・付加パラメータ ----------------------------------------
@@ -41,11 +49,12 @@ USE_FIXED_START_NODE = False
 # ε-greedy戦略用パラメータ（リセットなしの場合のみ使用）
 USE_EPSILON = True
 EPSILON = 0.01  # 10%の確率でランダム選択
+EPSILON_SOM = 0.20  # 20%の確率でランダム選択
 
 
 # CSVファイルから属性ベクトルを準備
-file_path = "500_movies.csv"  # 適宜修正
-#file_path = "10000_movies.csv"  # 適宜修正
+# file_path = "500_movies.csv"  # 適宜修正
+file_path = "1500_wines.csv"  # 適宜修正
 df = pd.read_csv(file_path)
 N = len(df.columns) - 1
 cont_num = len(df)
@@ -158,43 +167,103 @@ def generate_multi_contents_tasks_r(size, k=NUM_CONTENTS_TO_SEARCH):
         tasks.append((cid, start_node))
     return tasks
 
-#####(2)zipf要求
-def generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH, popularity_ratio=0.01, request_concentration=0.8):
+#####(2)zipf要求 modeで人気・不人気・混合を選択可能
+def generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH, popularity_ratio=0.05, request_concentration=0.8, mode="mix"):
     tasks = []
     
-    # 人気コンテンツを決定
+    # 人気コンテンツを決定（元のまま）
     num_popular = int(cont_num * popularity_ratio)
     all_cids = np.arange(1, cont_num + 1)
-    popular_cids = np.random.choice(all_cids, num_popular, replace=False)
-    unpopular_cids = np.setdiff1d(all_cids, popular_cids)
-    
+    popular_cids = np.random.choice(all_cids, num_popular, replace=False) if num_popular > 0 else np.array([], dtype=int)
+    unpopular_cids = np.setdiff1d(all_cids, popular_cids) if num_popular > 0 else all_cids
+
+    # 互換のため：modeは "mix" / "popular_only" / "unpopular_only"
+    mode = str(mode).lower()
+
     for _ in range(k):
-        # request_concentrationの確率で人気コンテンツから選ぶ
-        if random.random() < request_concentration:
-            cid = random.choice(popular_cids)
+        # request_concentration の確率で人気コンテンツから選ぶ（"mix" のときのみ）
+        if mode == "popular_only":
+            # 人気のみから選択（空なら全体にフォールバック）
+            if len(popular_cids) > 0:
+                cid = int(random.choice(popular_cids))
+            else:
+                cid = int(random.choice(all_cids))
+        elif mode == "unpopular_only":
+            # 不人気のみから選択（空なら全体にフォールバック）
+            if len(unpopular_cids) > 0:
+                cid = int(random.choice(unpopular_cids))
+            else:
+                cid = int(random.choice(all_cids))
         else:
-            cid = random.choice(unpopular_cids)
+            # 従来の挙動（mix）
+            if random.random() < request_concentration and len(popular_cids) > 0:
+                cid = int(random.choice(popular_cids))
+            else:
+                # unpopular が空のケースを安全に処理
+                if len(unpopular_cids) > 0:
+                    cid = int(random.choice(unpopular_cids))
+                else:
+                    cid = int(random.choice(all_cids))
             
         start_node = (np.random.randint(size), np.random.randint(size))
         tasks.append((cid, start_node))
     return tasks
 
-#####(3)類似要求
-def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=10):
-    tasks = []
-    available_genres = list(genre_to_cids.keys())
-    if not available_genres:
-        raise ValueError("ジャンル情報が見つかりませんでした。")
+
+####(3)類似要求
+# def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=1000):
+#     tasks = []
+#     available_genres = list(genre_to_cids.keys())
+#     if not available_genres:
+#         raise ValueError("ジャンル情報が見つかりませんでした。")
     
-    while len(tasks) < k:
-        current_genre = random.choice(available_genres)
-        cids_in_genre = genre_to_cids[current_genre]
-        for _ in range(burst_size):
-            if len(tasks) >= k: break
-            cid = random.choice(cids_in_genre)
-            start_node = (np.random.randint(size), np.random.randint(size))
-            tasks.append((cid, start_node))
+#     while len(tasks) < k:
+#         current_genre = random.choice(available_genres)
+#         cids_in_genre = genre_to_cids[current_genre]
+#         for _ in range(burst_size):
+#             if len(tasks) >= k: break
+#             cid = random.choice(cids_in_genre)
+#             start_node = (np.random.randint(size), np.random.randint(size))
+#             tasks.append((cid, start_node))
+#     return tasks
+
+def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=1000):
+    """
+    アンカーをランダムに1つ選び、ユークリッド距離（SOM距離）で近い順に候補を作成。
+    候補上位から 1/距離 の重みで k 件サンプリングして要求列を返す。
+    """
+    # 属性行列
+    V = np.vstack(cont_vector_array).astype(float)  # (cont_num, N)
+
+    # アンカーをランダムに選択
+    anchor_idx = np.random.randint(cont_num)  # 0-based
+    anchor_vec = V[anchor_idx]
+
+    # 全件とのユークリッド距離（小さいほど類似）
+    dist = np.linalg.norm(V - anchor_vec, axis=1)
+    dist[anchor_idx] = np.inf  # 自分自身は除外
+
+    # 上位M(=近い方から)を候補に
+    M = int(max(1, min(burst_size, cont_num - 1)))
+    idx_top = np.argpartition(dist, M)[:M]  # 最小M件
+    cand_cids = (idx_top + 1).astype(int)
+
+    # 重み = 1/距離（0割防止）。総和0にはならない想定だが念のため正規化
+    w = 1.0 / (dist[idx_top] + 1e-12)
+    p = w / w.sum()
+
+    # k件サンプリング（重複可）
+    sampled_cids = np.random.choice(cand_cids, size=k, replace=True, p=p)
+
+    # 既存の start_node ロジックを踏襲
+    def _start():
+        return (size // 2, size // 2) if USE_FIXED_START_NODE else (
+            np.random.randint(size), np.random.randint(size)
+        )
+
+    tasks = [(int(cid), _start()) for cid in sampled_cids]
     return tasks
+
 
 # ----------------------------------------------------------------------------
 # 統計量計算
@@ -210,13 +279,6 @@ def compute_stats_from_costs(iteration_costs_data):
         success_count = sum(1 for c in costs if c < TIMES_TO_SEARCH_HOP)
         success_rates.append((success_count / total) * 100)
     return medians, q1s, q3s, means, success_rates
-
-# ----------------------------------------------------------------------------
-# デバッグ用レコード（CSV 行にそのまま使う）        ★
-# ----------------------------------------------------------------------------
-DebugRec = namedtuple("DebugRec",
-                      ["method", "cid", "start", "found",
-                       "hops", "cost", "path"])
 
 
 # ----------------------------------------------------------------------------
@@ -252,7 +314,7 @@ def visualize_task_distribution(tasks, title):
 # ----------------------------------------------------------------------------
 # 既存手法による探索
 # ----------------------------------------------------------------------------
-def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
+def search_prop(cache_storage, net_vector_array, size, content_tasks):
     cache_hit = 0
     total_hops_used = 0
     for (cid, start_node) in content_tasks:
@@ -288,16 +350,14 @@ def search_prop(cache_storage, net_vector_array, size, content_tasks, log_list):
             curr = closest
         if found:
             cache_hit += 1
-            #デバッグ用レコードを追加
-            log_list.append(DebugRec("BASE", cid, start_node,curr, hops_used, hops_used, []))
         total_hops_used += hops_used
     avg_hops = total_hops_used / len(content_tasks) if content_tasks else 0.0
     return cache_hit, avg_hops
 
 # ----------------------------------------------------------------------------
-# ① 従来手法（コンテンツ毎にフェロモン管理）
+# ① 提案手法1（コンテンツ毎にフェロモン管理）
 # ----------------------------------------------------------------------------
-def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, log_list, pheromone_dict=None):
+def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, pheromone_dict=None):
     results = []
     if pheromone_dict is None:
         pheromone_dict = {}
@@ -316,7 +376,7 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
         vect = cont_vector_array[cid - 1]
         iteration_data = []
         best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（固定更新なので更新は記録のみ）
-        for _ in range(NUM_ITERATIONS):
+        for t in range(NUM_ITERATIONS):
             iter_costs = []
             all_paths = []
             all_costs = []
@@ -329,49 +389,119 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
                 cost = 0
                 found = False
                 
-                for _ in range(TIMES_TO_SEARCH_HOP):
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
-                        found = True
-                        break
-                    neighbors = get_neighbors(current_node[0], current_node[1], size)
-                    allowed = [n for n in neighbors if n not in visited]
-                    if not allowed:
-                        break
-                    # ε-greedyはリセットなしの場合のみ適用
-                    if  USE_EPSILON and random.random() < EPSILON:
-                        next_node = random.choice(allowed)
-                    else:
-                        probs = []
-                        denom = 0
-                        for n in allowed:
-                            edge = (current_node, n)
-                            tau = pheromone_trails[edge]
-                            dist = np.linalg.norm(vect - net_vector_array[n])
-                            eta = 1.0 / (dist + 1e-6)
-                            if np.sum(vect) > 0:
-                                A_ij = np.sum((tau ** ALPHA) * vect) / np.sum(vect)
-                            else:
-                                A_ij = 0
-                            score = A_ij * (eta ** BETA)
-                            probs.append(score)
-                            denom += score
-                        if denom == 0:
+                if t == 0:
+                    # === Iter.0 は純SOM（既存方式）に ε-greedy を導入 ===
+                    searched_node = []
+                    curr = start_node
+                    cost = 0
+                    path = [curr]                  
+
+                    for _ in range(TIMES_TO_SEARCH_HOP):
+                        cost += 1
+                        if cid in cache_storage[curr[0]][curr[1]]:
+                            found = True
                             break
-                        probs = [p / denom for p in probs]
-                        next_node = random.choices(allowed, weights=probs)[0]
-                    path.append(next_node)
-                    visited.add(next_node)
-                    cost += 1
-                    current_node = next_node
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
-                        found = True
-                        break
+                        hit_neighbor = False
+                        for nx, ny in get_neighbors(curr[0], curr[1], size):
+                            if cid in cache_storage[nx][ny]:
+                                found = True
+                                hit_neighbor = True
+                                break
+                        if found and hit_neighbor:
+                            break
+
+                        # --- ε-greedy 選択ロジック ---
+                        
+                        # 1. 訪問可能（未訪問）な隣接ノードのリストを取得
+                        allowed_neighbors = [
+                            n for n in get_neighbors(curr[0], curr[1], size)
+                            if n not in searched_node
+                        ]
+
+                        if not allowed_neighbors:
+                            # 行き先がない（袋小路）
+                            break
+
+                        # 2. 貪欲法（exploitation）のための「最も近い」ノードを探す
+                        min_dist = float('inf')
+                        closest = None
+                        for neighbor in allowed_neighbors:
+                            dist = np.linalg.norm(vect - net_vector_array[neighbor])
+                            if dist < min_dist:
+                                min_dist = dist
+                                closest = neighbor
+                        
+                        if closest is None:
+                            # 念のため（allowed_neighborsが空でなければ通常ここには来ない）
+                            break
+                        
+                        # 3. ε-greedy による最終決定
+                        next_node = None
+                        if USE_EPSILON and random.random() < EPSILON_SOM:
+                            # (A) 探索 (Exploration) ： 確率 ε でランダムに選ぶ
+                            next_node = random.choice(allowed_neighbors)
+                        else:
+                            # (B) 搾取 (Exploitation)： 確率 1-ε で最も近いノードを選ぶ
+                            next_node = closest
+                        # --- ロジックここまで ---
+
+                        searched_node.append(curr)
+                        
+                        # 決定したノードへ移動
+                        curr = next_node  # <--- `closest` ではなく `next_node` に変更
+                        path.append(curr)                  
+                        
+                        if cid in cache_storage[curr[0]][curr[1]]:
+                            found = True
+                            break
+                    current_node = curr
+                else:
+                    # === 以降は現行の確率選択(ACO)そのまま ===                
+                    for _ in range(TIMES_TO_SEARCH_HOP):
+                        if cid in cache_storage[current_node[0]][current_node[1]]:
+                            found = True
+                            break
+                        neighbors = get_neighbors(current_node[0], current_node[1], size)
+                        allowed = [n for n in neighbors if n not in visited]
+                        if not allowed:
+                            break
+                        # ε-greedyはリセットなしの場合のみ適用
+                        if  USE_EPSILON and random.random() < EPSILON:
+                            next_node = random.choice(allowed)
+                        else:
+                        # フェロモンパラメータの調整
+                            if NUM_ITERATIONS >= 1:
+                                ALPHA = ALPHA_START + (ALPHA_END - ALPHA_START) * (t / (NUM_ITERATIONS - 1))
+                                BETA  = BETA_START  + (BETA_END  - BETA_START)  * (t / (NUM_ITERATIONS - 1))
+                            probs = []
+                            denom = 0
+                            for n in allowed:
+                                edge = (current_node, n)
+                                tau = pheromone_trails[edge]
+                                dist = np.linalg.norm(vect - net_vector_array[n])
+                                eta = 1.0 / (dist + 1e-6)
+                                if np.sum(vect) > 0:
+                                    A_ij = np.sum((tau ** ALPHA) * vect) / np.sum(vect)
+                                else:
+                                    A_ij = 0
+                                score = A_ij * (eta ** BETA)
+                                probs.append(score)
+                                denom += score
+                            if denom == 0:
+                                break
+                            probs = [p / denom for p in probs]
+                            next_node = random.choices(allowed, weights=probs)[0]
+                        path.append(next_node)
+                        visited.add(next_node)
+                        cost += 1
+                        current_node = next_node
+                        if cid in cache_storage[current_node[0]][current_node[1]]:
+                            found = True
+                            break
                 if found:
                     all_paths.append(path)
                     all_costs.append(cost)
                     iter_costs.append(cost)
-                    #デバック用レコードの追加
-                    log_list.append(DebugRec("SINGLE", cid, start_node,current_node, cost, cost, path))
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
             best_iter_cost = min(all_costs) if all_costs else TIMES_TO_SEARCH_HOP
@@ -412,9 +542,9 @@ def multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, 
     return results
 
 # ----------------------------------------------------------------------------
-# ② 提案手法（属性毎にフェロモン管理）
+# ② 提案手法2（属性毎にフェロモン管理）
 # ----------------------------------------------------------------------------
-def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, log_list):
+def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks):
     results = []
     tag =  "ATTRIB_NR"
     
@@ -429,7 +559,7 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
         vect = cont_vector_array[cid - 1]
         iteration_data = []
         best_cost = TIMES_TO_SEARCH_HOP  # 最良結果の記録（固定更新なので更新は記録のみ）
-        for _ in range(NUM_ITERATIONS):
+        for t in range(NUM_ITERATIONS):
             iter_costs = []
             all_paths = []
             all_costs = []
@@ -441,49 +571,120 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
                 visited.add(current_node)
                 cost = 0
                 found = False
-                for _ in range(TIMES_TO_SEARCH_HOP):
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
-                        found = True
-                        break
-                    neighbors = get_neighbors(current_node[0], current_node[1], size)
-                    allowed = [n for n in neighbors if n not in visited]
-                    if not allowed:
-                        break
-                    # ε-greedyはリセットなしの場合のみ適用
-                    if  USE_EPSILON and random.random() < EPSILON:
-                        next_node = random.choice(allowed)
-                    else:
-                        probs = []
-                        denom = 0
-                        for n in allowed:
-                            edge = (current_node, n)
-                            tau_list = pheromone_trails[edge]
-                            dist = np.linalg.norm(vect - net_vector_array[n])
-                            eta = 1.0 / (dist + 1e-6)
-                            if np.sum(vect) > 0:
-                                A_ij = np.sum((tau_list ** ALPHA) * vect) / np.sum(vect)
-                            else:
-                                A_ij = 0
-                            score = A_ij * (eta ** BETA)
-                            probs.append(score)
-                            denom += score
-                        if denom == 0:
+
+                if t == 0:
+                    # === Iter.0 は純SOM（既存方式）に ε-greedy を導入 ===
+                    searched_node = []
+                    curr = start_node
+                    cost = 0
+                    path = [curr]                  
+
+                    for _ in range(TIMES_TO_SEARCH_HOP):
+                        cost += 1
+                        if cid in cache_storage[curr[0]][curr[1]]:
+                            found = True
                             break
-                        probs = [p / denom for p in probs]
-                        next_node = random.choices(allowed, weights=probs)[0]
-                    path.append(next_node)
-                    visited.add(next_node)
-                    cost += 1
-                    current_node = next_node
-                    if cid in cache_storage[current_node[0]][current_node[1]]:
-                        found = True
-                        break
+                        hit_neighbor = False
+                        for nx, ny in get_neighbors(curr[0], curr[1], size):
+                            if cid in cache_storage[nx][ny]:
+                                found = True
+                                hit_neighbor = True
+                                break
+                        if found and hit_neighbor:
+                            break
+
+                        # --- ε-greedy 選択ロジック ---
+                        
+                        # 1. 訪問可能（未訪問）な隣接ノードのリストを取得
+                        allowed_neighbors = [
+                            n for n in get_neighbors(curr[0], curr[1], size)
+                            if n not in searched_node
+                        ]
+
+                        if not allowed_neighbors:
+                            # 行き先がない（袋小路）
+                            break
+
+                        # 2. 貪欲法（exploitation）のための「最も近い」ノードを探す
+                        min_dist = float('inf')
+                        closest = None
+                        for neighbor in allowed_neighbors:
+                            dist = np.linalg.norm(vect - net_vector_array[neighbor])
+                            if dist < min_dist:
+                                min_dist = dist
+                                closest = neighbor
+                        
+                        if closest is None:
+                            # 念のため（allowed_neighborsが空でなければ通常ここには来ない）
+                            break
+                        
+                        # 3. ε-greedy による最終決定
+                        next_node = None
+                        if USE_EPSILON and random.random() < EPSILON_SOM:
+                            # (A) 探索 (Exploration) ： 確率 ε でランダムに選ぶ
+                            next_node = random.choice(allowed_neighbors)
+                        else:
+                            # (B) 搾取 (Exploitation)： 確率 1-ε で最も近いノードを選ぶ
+                            next_node = closest
+                        # --- ロジックここまで ---
+
+                        searched_node.append(curr)
+                        
+                        # 決定したノードへ移動
+                        curr = next_node  # <--- `closest` ではなく `next_node` に変更
+                        path.append(curr)                  
+                        
+                        if cid in cache_storage[curr[0]][curr[1]]:
+                            found = True
+                            break
+                    current_node = curr
+                else:
+                    # === 以降は現行の確率選択(ACO)そのまま ===
+                    for _ in range(TIMES_TO_SEARCH_HOP):
+                        if cid in cache_storage[current_node[0]][current_node[1]]:
+                            found = True
+                            break
+                        neighbors = get_neighbors(current_node[0], current_node[1], size)
+                        allowed = [n for n in neighbors if n not in visited]
+                        if not allowed:
+                            break
+                        # ε-greedyはリセットなしの場合のみ適用
+                        if  USE_EPSILON and random.random() < EPSILON:
+                            next_node = random.choice(allowed)
+                        else:
+                        # フェロモンパラメータの調整
+                            if NUM_ITERATIONS >= 1:
+                                ALPHA = ALPHA_START + (ALPHA_END - ALPHA_START) * (t / (NUM_ITERATIONS - 1))
+                                BETA  = BETA_START  + (BETA_END  - BETA_START)  * (t / (NUM_ITERATIONS - 1))
+                            probs = []
+                            denom = 0
+                            for n in allowed:
+                                edge = (current_node, n)
+                                tau_list = pheromone_trails[edge]
+                                dist = np.linalg.norm(vect - net_vector_array[n])
+                                eta = 1.0 / (dist + 1e-6)
+                                if np.sum(vect) > 0:
+                                    A_ij = np.sum((tau_list ** ALPHA) * vect) / np.sum(vect)
+                                else:
+                                    A_ij = 0
+                                score = A_ij * (eta ** BETA)
+                                probs.append(score)
+                                denom += score
+                            if denom == 0:
+                                break
+                            probs = [p / denom for p in probs]
+                            next_node = random.choices(allowed, weights=probs)[0]
+                        path.append(next_node)
+                        visited.add(next_node)
+                        cost += 1
+                        current_node = next_node
+                        if cid in cache_storage[current_node[0]][current_node[1]]:
+                            found = True
+                            break
                 if found:
                     all_paths.append(path)
                     all_costs.append(cost)
                     iter_costs.append(cost)
-                    #デバック用コードの追加
-                    log_list.append(DebugRec(tag, cid, start_node,current_node, cost, cost, path))
                 else:
                     iter_costs.append(TIMES_TO_SEARCH_HOP)
                 #　イタレーションベストを求める
@@ -530,8 +731,8 @@ def multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size
 
 
 
-def multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, log_list):
-    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks, log_list)
+def multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks):
+    return multi_contents_attrib_pheromone_common(cache_storage, net_vector_array, size, content_tasks)
 
 
 def gather_stats_for_content(content_index, single_all_runs,  attrib_noreset_all_adapt):
@@ -543,20 +744,9 @@ def plot_metrics_for_content(stat_single,  stat_attrib_noreset_adpat, content_la
     if (stat_single is None)  or (stat_attrib_noreset_adpat is None):
         print(f"No data for content {content_label}")
         return
-    s_med, s_q1, s_q3, s_mean, s_succ = stat_single
-    an_a_med, an_a_q1, an_a_q3, an_a_mean, an_a_succ = stat_attrib_noreset_adpat
+    s_mean, s_succ = stat_single
+    an_a_mean, an_a_succ = stat_attrib_noreset_adpat
     its = range(1, NUM_ITERATIONS + 1)
-    plt.figure()
-    plt.plot(its, s_med, label='Single', color='red', marker='o')
-    plt.fill_between(its, s_q1, s_q3, color='red', alpha=0.2)
-    plt.plot(its, an_a_med, label='Attrib', color='blue', marker='s')
-    plt.fill_between(its, an_a_q1, an_a_q3, color='blue', alpha=0.2)
-    
-    plt.title(f"Content {content_label}: Median & Quartiles")
-    plt.xlabel("Iteration")
-    plt.ylabel("Hops")
-    plt.legend()
-    plt.show()
     plt.figure()
     plt.plot(its, s_succ, label='Single', color='red', marker='o')
     plt.plot(its, an_a_succ, label='Attrib', color='blue', marker='s')
@@ -609,20 +799,8 @@ def plot_overall_metrics(stats_dict):
     font_size = 18
     its = range(1, NUM_ITERATIONS + 1)
     plt.figure()
-    plt.plot(its, stats_dict['Single'][0], label='Single', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][0], label='Attrib', color='blue', marker='s')
-    plt.title("Overall: Median")
-    plt.xlabel("Iteration")
-    plt.ylabel("Median Hops")
-    plt.legend()
-    plt.xlim(left=0)
-    plt.ylim(bottom=0)
-    plt.tick_params(labelsize=font_size)
-    plt.show()
-
-    plt.figure()
-    plt.plot(its, stats_dict['Single'][3], label='proposed method 1', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][3], label='proposed method 2', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][3], label='proposed method1', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][3], label='proposed method2', color='blue', marker='s')
     plt.title("Overall: Average Cost")
     plt.xlabel("Iteration", fontsize=font_size)
     plt.ylabel("Average number of hops", fontsize=font_size)
@@ -634,8 +812,8 @@ def plot_overall_metrics(stats_dict):
     plt.show()
 
     plt.figure()
-    plt.plot(its, stats_dict['Single'][4], label='比較方式', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][4], label='提案方式', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][4], label='proposed method1', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][4], label='proposed method2', color='blue', marker='s')
     plt.title("Overall: Success Rate")
     plt.xlabel("Iteration", fontsize=font_size)
     plt.ylabel("Success Rate (%)", fontsize=font_size)
@@ -643,16 +821,18 @@ def plot_overall_metrics(stats_dict):
     plt.yticks(fontsize=14) 
     plt.legend(fontsize=font_size)
     plt.xlim(left=0)
-    plt.ylim(bottom=0)
+    plt.ylim(0,100)
     plt.show()
 
 def main():
     size = 50
     cache_storage, net_vector_array = cache_prop(size)
+    #コンテンツ生成方法を選択
     content_tasks = generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH)
     print("Generated Content Tasks:", content_tasks)
-    
-    debug_logs = []
+    unique_cids = len(set(cid for cid, _ in content_tasks))
+    print(f"生成コンテンツ種類数: {unique_cids}/{cont_num}")
+
 
     single_all_runs = []
     attrib_noreset_all_adapt = []
@@ -661,19 +841,16 @@ def main():
     visualize_task_distribution(content_tasks, "Task Distribution")
 
     for _sim in range(TIME_TO_SIMULATE):
-        single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
-        attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
+        print(f"\n=== Simulation #{_sim + 1} ===")
+        single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks)
+        attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks)
 
         single_all_runs.append(single_res)
         attrib_noreset_all_adapt.append(attrib_noreset_res)
 
-    cache_hit, avg_hops = search_prop(cache_storage, net_vector_array, size, content_tasks, debug_logs)
+    cache_hit, avg_hops = search_prop(cache_storage, net_vector_array, size, content_tasks)
     success_rate = (cache_hit / len(content_tasks)) * 100
 
-    #CSV 出力
-    df = pd.DataFrame(debug_logs)
-    df.to_csv("debug_log.csv", index=False, encoding="utf-8-sig")
-    print(f"\n>>> {len(df)} 行を書き出しました → debug_log.csv")
 
     print("\n=== Existing Method (Same Tasks) ===")
     print(f"  - #Tasks : {len(content_tasks)}")
@@ -683,9 +860,9 @@ def main():
     for content_idx in range(NUM_CONTENTS_TO_SEARCH):
         print(f"=== [Comparison] Content #{content_idx+1} ===")
 
-        stat_s, stat_an_a = gather_stats_for_content(content_idx, single_all_runs, attrib_noreset_all_adapt)
-        plot_metrics_for_content(stat_s, stat_an_a, content_label=content_idx+1)
-    # 総合結果の統計量を計算してプロット
+        # stat_s, stat_an_a = gather_stats_for_content(content_idx, single_all_runs, attrib_noreset_all_adapt)
+        # plot_metrics_for_content(stat_s, stat_an_a, content_label=content_idx+1)
+    #総合結果の統計量を計算してプロット
     overall_stats = {
         'Single': gather_overall_stats(single_all_runs),
         'NR-Adapt': gather_overall_stats(attrib_noreset_all_adapt),
