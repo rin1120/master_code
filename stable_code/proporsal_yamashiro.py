@@ -16,7 +16,7 @@ import pandas as pd
 import random
 
 ###   import csv   ###
-file_path = "/Users/asaken-n51/Documents/master_code/test/500_movies.csv"
+file_path = "/Users/asaken-n51/Documents/master_code/git_code/master_code/dev_code/10000_movies.csv"
 df = pd.read_csv(file_path)
 
 ###   define variables   ###
