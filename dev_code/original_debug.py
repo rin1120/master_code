@@ -11,7 +11,7 @@ from collections import namedtuple
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -160,6 +160,20 @@ def compute_stats_from_costs(iteration_costs_data):
 DebugRec = namedtuple("DebugRec",
                       ["method", "cid", "start", "found",
                        "hops", "cost", "path"])
+
+
+# ----------------------------------------------------------------------------
+# 各メソッドの最良結果の表示
+# ----------------------------------------------------------------------------
+# 各メソッドの結果を格納したリストはすでに single_all_runs, attrib_reset_all_runs, attrib_noreset_all_runs にある ---
+# helper 関数: 各コンテンツ idx の「最良ホップ」を取り出す
+def best_for_content(all_runs, idx):
+    best = TIMES_TO_SEARCH_HOP
+    for run in all_runs:
+        # run[idx] は各イテレーションの hops リストのリスト
+        for iter_costs in run[idx]:
+            best = min(best, min(iter_costs))
+    return best
 
 # ----------------------------------------------------------------------------
 # 既存手法による探索
@@ -539,6 +553,18 @@ def main():
             dist     = compute_content_distance(prev_cid, cid)
             print(f"=== [Comparison] Content #{content_idx+1} ===")
             print(f"Distance between content {prev_cid} and {cid} = {dist:.3f}")
+        
+        #　各手法の最良ホップ数を表示
+        cid = content_tasks[content_idx][0]
+        # ――― BASE（ログ）―――
+        base_hops = [rec.hops for rec in debug_logs
+                     if rec.method == "BASE" and rec.cid == cid]
+        best_base = min(base_hops) if base_hops else TIMES_TO_SEARCH_HOP
+        # ――― 他の３手法 ―――
+        best_single = best_for_content(single_all_runs, content_idx)
+        best_attrib_reset = best_for_content(attrib_reset_all_runs, content_idx)
+        best_attrib_noreset = best_for_content(attrib_noreset_all_runs, content_idx)
+        print(f"BASE＝{best_base}  SINGLE＝{best_single}  ATTRIB_R＝{best_attrib_reset}  ATTRIB_NR＝{best_attrib_noreset}")
 
         stat_s, stat_ar, stat_an = gather_stats_for_content(content_idx, single_all_runs, attrib_reset_all_runs, attrib_noreset_all_runs)
         plot_three_metrics_for_content(stat_s, stat_ar, stat_an, content_label=content_idx+1)

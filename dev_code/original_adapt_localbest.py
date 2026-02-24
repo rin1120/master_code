@@ -9,8 +9,8 @@ from collections import namedtuple
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
-TIME_TO_SIMULATE = 1
-NUM_CONTENTS_TO_SEARCH = 20  # 探索するコンテンツ数
+TIME_TO_SIMULATE = 3
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -39,7 +39,8 @@ EPSILON = 0.01  # 10%の確率でランダム選択
 
 
 # CSVファイルから属性ベクトルを準備
-file_path = "500_movies.csv"  # 適宜修正
+#file_path = "500_movies.csv"  # 適宜修正
+file_path ="1500_wines.csv" # 適宜修正
 df = pd.read_csv(file_path)
 N = len(df.columns) - 1
 cont_num = len(df)

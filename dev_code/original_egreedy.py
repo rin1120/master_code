@@ -10,7 +10,7 @@ from collections import namedtuple
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -29,7 +29,7 @@ USE_FIXED_START_NODE = False
 
 # ε-greedy戦略用パラメータ（リセットなしの場合のみ使用）
 USE_EPSILON = True
-EPSILON = 0.1  # 10%の確率でランダム選択
+EPSILON = 0.01  # 10%の確率でランダム選択
 
 
 # CSVファイルから属性ベクトルを準備

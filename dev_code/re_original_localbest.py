@@ -15,9 +15,9 @@ from collections import defaultdict
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 100  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
 NUM_ANTS = 10
-NUM_ITERATIONS = 10
+NUM_ITERATIONS = 100
 
 ALPHA = 1.0   # フェロモンの指数
 BETA = 1.0    # SOM類似度の指数
@@ -158,43 +158,103 @@ def generate_multi_contents_tasks_r(size, k=NUM_CONTENTS_TO_SEARCH):
         tasks.append((cid, start_node))
     return tasks
 
-#####(2)zipf要求
-def generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH, popularity_ratio=0.01, request_concentration=0.8):
+#####(2)zipf要求 modeで人気・不人気・混合を選択可能
+def generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH, popularity_ratio=0.01, request_concentration=0.8, mode="mix"):
     tasks = []
     
-    # 人気コンテンツを決定
+    # 人気コンテンツを決定（元のまま）
     num_popular = int(cont_num * popularity_ratio)
     all_cids = np.arange(1, cont_num + 1)
-    popular_cids = np.random.choice(all_cids, num_popular, replace=False)
-    unpopular_cids = np.setdiff1d(all_cids, popular_cids)
-    
+    popular_cids = np.random.choice(all_cids, num_popular, replace=False) if num_popular > 0 else np.array([], dtype=int)
+    unpopular_cids = np.setdiff1d(all_cids, popular_cids) if num_popular > 0 else all_cids
+
+    # 互換のため：modeは "mix" / "popular_only" / "unpopular_only"
+    mode = str(mode).lower()
+
     for _ in range(k):
-        # request_concentrationの確率で人気コンテンツから選ぶ
-        if random.random() < request_concentration:
-            cid = random.choice(popular_cids)
+        # request_concentration の確率で人気コンテンツから選ぶ（"mix" のときのみ）
+        if mode == "popular_only":
+            # 人気のみから選択（空なら全体にフォールバック）
+            if len(popular_cids) > 0:
+                cid = int(random.choice(popular_cids))
+            else:
+                cid = int(random.choice(all_cids))
+        elif mode == "unpopular_only":
+            # 不人気のみから選択（空なら全体にフォールバック）
+            if len(unpopular_cids) > 0:
+                cid = int(random.choice(unpopular_cids))
+            else:
+                cid = int(random.choice(all_cids))
         else:
-            cid = random.choice(unpopular_cids)
+            # 従来の挙動（mix）
+            if random.random() < request_concentration and len(popular_cids) > 0:
+                cid = int(random.choice(popular_cids))
+            else:
+                # unpopular が空のケースを安全に処理
+                if len(unpopular_cids) > 0:
+                    cid = int(random.choice(unpopular_cids))
+                else:
+                    cid = int(random.choice(all_cids))
             
         start_node = (np.random.randint(size), np.random.randint(size))
         tasks.append((cid, start_node))
     return tasks
 
-#####(3)類似要求
-def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=10):
-    tasks = []
-    available_genres = list(genre_to_cids.keys())
-    if not available_genres:
-        raise ValueError("ジャンル情報が見つかりませんでした。")
+
+####(3)類似要求
+# def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=1000):
+#     tasks = []
+#     available_genres = list(genre_to_cids.keys())
+#     if not available_genres:
+#         raise ValueError("ジャンル情報が見つかりませんでした。")
     
-    while len(tasks) < k:
-        current_genre = random.choice(available_genres)
-        cids_in_genre = genre_to_cids[current_genre]
-        for _ in range(burst_size):
-            if len(tasks) >= k: break
-            cid = random.choice(cids_in_genre)
-            start_node = (np.random.randint(size), np.random.randint(size))
-            tasks.append((cid, start_node))
+#     while len(tasks) < k:
+#         current_genre = random.choice(available_genres)
+#         cids_in_genre = genre_to_cids[current_genre]
+#         for _ in range(burst_size):
+#             if len(tasks) >= k: break
+#             cid = random.choice(cids_in_genre)
+#             start_node = (np.random.randint(size), np.random.randint(size))
+#             tasks.append((cid, start_node))
+#     return tasks
+
+def generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH, burst_size=1000):
+    """
+    アンカーをランダムに1つ選び、ユークリッド距離（SOM距離）で近い順に候補を作成。
+    候補上位から 1/距離 の重みで k 件サンプリングして要求列を返す。
+    """
+    # 属性行列
+    V = np.vstack(cont_vector_array).astype(float)  # (cont_num, N)
+
+    # アンカーをランダムに選択
+    anchor_idx = np.random.randint(cont_num)  # 0-based
+    anchor_vec = V[anchor_idx]
+
+    # 全件とのユークリッド距離（小さいほど類似）
+    dist = np.linalg.norm(V - anchor_vec, axis=1)
+    dist[anchor_idx] = np.inf  # 自分自身は除外
+
+    # 上位M(=近い方から)を候補に
+    M = int(max(1, min(burst_size, cont_num - 1)))
+    idx_top = np.argpartition(dist, M)[:M]  # 最小M件
+    cand_cids = (idx_top + 1).astype(int)
+
+    # 重み = 1/距離（0割防止）。総和0にはならない想定だが念のため正規化
+    w = 1.0 / (dist[idx_top] + 1e-12)
+    p = w / w.sum()
+
+    # k件サンプリング（重複可）
+    sampled_cids = np.random.choice(cand_cids, size=k, replace=True, p=p)
+
+    # 既存の start_node ロジックを踏襲
+    def _start():
+        return (size // 2, size // 2) if USE_FIXED_START_NODE else (
+            np.random.randint(size), np.random.randint(size)
+        )
+
+    tasks = [(int(cid), _start()) for cid in sampled_cids]
     return tasks
+
 
 # ----------------------------------------------------------------------------
 # 統計量計算
@@ -621,8 +681,8 @@ def plot_overall_metrics(stats_dict):
     plt.show()
 
     plt.figure()
-    plt.plot(its, stats_dict['Single'][3], label='proposed method 1', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][3], label='proposed method 2', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][3], label='比較手法', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][3], label='提案手法', color='blue', marker='s')
     plt.title("Overall: Average Cost")
     plt.xlabel("Iteration", fontsize=font_size)
     plt.ylabel("Average number of hops", fontsize=font_size)
@@ -634,8 +694,8 @@ def plot_overall_metrics(stats_dict):
     plt.show()
 
     plt.figure()
-    plt.plot(its, stats_dict['Single'][4], label='比較方式', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][4], label='提案方式', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][4], label='比較手法', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][4], label='提案手法', color='blue', marker='s')
     plt.title("Overall: Success Rate")
     plt.xlabel("Iteration", fontsize=font_size)
     plt.ylabel("Success Rate (%)", fontsize=font_size)
@@ -649,9 +709,12 @@ def plot_overall_metrics(stats_dict):
 def main():
     size = 50
     cache_storage, net_vector_array = cache_prop(size)
-    content_tasks = generate_multi_contents_tasks_z(size, k=NUM_CONTENTS_TO_SEARCH)
+    #コンテンツ生成方法を選択
+    content_tasks = generate_multi_contents_tasks_s(size, k=NUM_CONTENTS_TO_SEARCH)
     print("Generated Content Tasks:", content_tasks)
-    
+    unique_cids = len(set(cid for cid, _ in content_tasks))
+    print(f"生成コンテンツ種類数: {unique_cids}/{cont_num}")
+
     debug_logs = []
 
     single_all_runs = []
@@ -661,6 +724,7 @@ def main():
     visualize_task_distribution(content_tasks, "Task Distribution")
 
     for _sim in range(TIME_TO_SIMULATE):
+        print(f"\n=== Simulation #{_sim + 1} ===")
         single_res = multi_contents_single_pheromone_with_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
         attrib_noreset_res = multi_contents_attrib_pheromone_no_reset(cache_storage, net_vector_array, size, content_tasks, debug_logs)
 
@@ -683,9 +747,9 @@ def main():
     for content_idx in range(NUM_CONTENTS_TO_SEARCH):
         print(f"=== [Comparison] Content #{content_idx+1} ===")
 
-        stat_s, stat_an_a = gather_stats_for_content(content_idx, single_all_runs, attrib_noreset_all_adapt)
-        plot_metrics_for_content(stat_s, stat_an_a, content_label=content_idx+1)
-    # 総合結果の統計量を計算してプロット
+        # stat_s, stat_an_a = gather_stats_for_content(content_idx, single_all_runs, attrib_noreset_all_adapt)
+        # plot_metrics_for_content(stat_s, stat_an_a, content_label=content_idx+1)
+    #総合結果の統計量を計算してプロット
     overall_stats = {
         'Single': gather_overall_stats(single_all_runs),
         'NR-Adapt': gather_overall_stats(attrib_noreset_all_adapt),

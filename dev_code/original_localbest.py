@@ -4,13 +4,14 @@ import numpy as np
 import pandas as pd
 import random
 import matplotlib.pyplot as plt
+import japanize_matplotlib
 from collections import namedtuple  
 
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 20  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
@@ -495,6 +496,7 @@ def gather_overall_stats(all_runs):
 
 def plot_overall_metrics(stats_dict):
     # stats_dict: {'Single': stats, 'AttribReset': stats, 'NR-Adapt': stats, 'NR-Base': stats}
+    font_size = 18
     its = range(1, NUM_ITERATIONS + 1)
     plt.figure()
     plt.plot(its, stats_dict['Single'][0], label='Single', color='red', marker='o')
@@ -503,24 +505,35 @@ def plot_overall_metrics(stats_dict):
     plt.xlabel("Iteration")
     plt.ylabel("Median Hops")
     plt.legend()
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
+    plt.tick_params(labelsize=font_size)
     plt.show()
 
     plt.figure()
-    plt.plot(its, stats_dict['Single'][3], label='Single', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][3], label='Attrib', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][3], label='proposed method 1', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][3], label='proposed method 2', color='blue', marker='s')
     plt.title("Overall: Average Cost")
-    plt.xlabel("Iteration")
-    plt.ylabel("Average Hops")
-    plt.legend()
+    plt.xlabel("Iteration", fontsize=font_size)
+    plt.ylabel("Average number of hops", fontsize=font_size)
+    plt.xticks(fontsize=14) 
+    plt.yticks(fontsize=14)  
+    plt.legend(fontsize=font_size)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
     plt.show()
 
     plt.figure()
-    plt.plot(its, stats_dict['Single'][4], label='Single', color='red', marker='o')
-    plt.plot(its, stats_dict['NR-Adapt'][4], label='Attrib', color='blue', marker='s')
+    plt.plot(its, stats_dict['Single'][4], label='比較方式', color='red', marker='o')
+    plt.plot(its, stats_dict['NR-Adapt'][4], label='提案方式', color='blue', marker='s')
     plt.title("Overall: Success Rate")
-    plt.xlabel("Iteration")
-    plt.ylabel("Success Rate (%)")
-    plt.legend()
+    plt.xlabel("Iteration", fontsize=font_size)
+    plt.ylabel("Success Rate (%)", fontsize=font_size)
+    plt.xticks(fontsize=14) 
+    plt.yticks(fontsize=14) 
+    plt.legend(fontsize=font_size)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
     plt.show()
 
 def main():

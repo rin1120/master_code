@@ -198,31 +198,6 @@ def theoretical_hops(cache_storage, N, num_tasks):
 
     return sum(dists)/len(dists) if dists else 0.0
 
-
-# def run_experiment_over_sizes():
-#     sizes      = [10, 20, 30, 40, 50]
-#     sim_hops   = []
-#     theo_hops  = []
-
-#     for N in sizes:
-#         # 既存コードはグローバル変数 size を参照しているので上書き
-#         global size
-#         size = N
-
-#         # ① キャッシュ配置（1 回）※重い処理なので再利用
-#         cache_storage, net_vec = cache_prop()
-
-#         # ② 実測ホップ数
-#         _, avg_hops = search_prop(cache_storage, net_vec)
-#         sim_hops.append(avg_hops)
-
-#         # ③ 理論ホップ数
-#         avg_theo = theoretical_hops(cache_storage, N, TIMES_TO_SEARCH)
-#         theo_hops.append(avg_theo)
-
-#         print(f"N={N:2d} | simulation={avg_hops:.2f} | theory={avg_theo:.2f}")
-
-#     return sizes, sim_hops, theo_hops
 def run_experiment_over_sizes():
     sizes         = [10, 20, 30, 40, 50]
     mean_sim_hops = []
@@ -253,20 +228,18 @@ def run_experiment_over_sizes():
     return sizes, mean_sim_hops, mean_theo
 
 
-# def plot_results(sizes, sim_hops, theo_hops):
-#     fs=16
-#     plt.plot(sizes, sim_hops,  marker='o', label='既存手法')
-#     plt.plot(sizes, theo_hops, marker='s', linestyle='--',
-#              label='理論的最短経路')
-#     plt.xlabel('Network size  (N×N)', fontsize=fs)
-#     plt.ylabel('Average hops', fontsize=fs)           
-#     plt.ylim(bottom=0) 
-#     plt.legend(fontsize=fs)
-#     plt.show()
 def plot_results(sizes, mean_sim, mean_theo, fs=18):
-    plt.plot(sizes, mean_sim,  marker='o', label='既存手法',  linewidth=2)
-    plt.plot(sizes, mean_theo, marker='s', linestyle='--',
-             label='理論的最短経路', linewidth=2)
+    # plt.plot(sizes, mean_sim,  marker='o', label='既存手法',  linewidth=2)
+    # plt.plot(sizes, mean_theo, marker='s', linestyle='--',
+    #          label='理論的最短経路', linewidth=2)
+    
+
+    # 色を取得して表示
+    lines1 = plt.plot(sizes, mean_sim,  marker='o', label='既存手法', linewidth=2)
+    lines2 = plt.plot(sizes, mean_theo, marker='s', linestyle='--', label='理論的最短経路', linewidth=2)
+    print(f"既存手法の描画色: {lines1[0].get_color()}")       # ここで色を確認
+    print(f"理論的最短経路の描画色: {lines2[0].get_color()}") # ここで色を確認
+
     plt.ylim(bottom=0)
     plt.xticks(fontsize=14) 
     plt.yticks(fontsize=14) 

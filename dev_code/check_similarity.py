@@ -7,8 +7,8 @@ import pandas as pd
 
 # パラメータ
 file_path = "500_movies.csv"   # 適宜修正
-cid1 = 19                     # 1つ目のコンテンツID (ユーザーが指定)
-cid2 = 300                     # 2つ目のコンテンツID (ユーザーが指定)
+cid1 = 227                    # 1つ目のコンテンツID (ユーザーが指定)
+cid2 = 411                     # 2つ目のコンテンツID (ユーザーが指定)
 
 # CSV読み込み
 df = pd.read_csv(file_path)

@@ -9,8 +9,8 @@ from collections import namedtuple
 # ----------------------------------------------------------------------------
 # パラメータ設定
 # ----------------------------------------------------------------------------
-TIME_TO_SIMULATE = 1
-NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
+TIME_TO_SIMULATE = 3
+NUM_CONTENTS_TO_SEARCH = 50  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 

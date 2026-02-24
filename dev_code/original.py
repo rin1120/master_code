@@ -10,14 +10,14 @@ import matplotlib.pyplot as plt
 # パラメータ設定
 # ----------------------------------------------------------------------------
 TIME_TO_SIMULATE = 3
-NUM_CONTENTS_TO_SEARCH = 5  # 探索するコンテンツ数
+NUM_CONTENTS_TO_SEARCH = 10  # 探索するコンテンツ数
 NUM_ANTS = 10
 NUM_ITERATIONS = 100
 
 ALPHA = 1.0   # フェロモンの指数
 BETA = 1.0    # SOM類似度の指数
 RHO = 0.1     # 蒸発率
-Q = 100
+Q = 10
 
 TIMES_TO_SEARCH_HOP = 50
 TIMES_TO_CACHE_HOP = 10

@@ -36,11 +36,11 @@ USE_FIXED_START_NODE = False
 USE_EPSILON = True
 EPSILON = 0.01  # 10%の確率でランダム選択
 
-REPLACEMENT_POLICY = "LRU"   # "LRU" か "FIFO"
+REPLACEMENT_POLICY = "FIFO"   # "LRU" か "FIFO"
 global_clock = 0             # LRU 用タイムスタンプ
 
 # CSVファイルから属性ベクトルを準備
-file_path = "500_movies.csv"  # 適宜修正
+file_path = "10000_movies.csv"  # 適宜修正
 #file_path ="1500_wines.csv" # 適宜修正
 df = pd.read_csv(file_path)
 N = len(df.columns) - 1
@@ -576,7 +576,7 @@ def plot_capacity_tradeoff(cap_list,
 # ---------- メイン実行 ----------
 def main():
     size = 30
-    cap_range = [5, 10, 15]
+    cap_range = [10, 20, 30, 40, 50]
 
     # ３手法×容量ごとの平均ホップ数・成功率を取得
     (h_prev, h_sing, h_attr, s_prev, s_sing, s_attr) = simulate_for_capacity(cap_range, size)
